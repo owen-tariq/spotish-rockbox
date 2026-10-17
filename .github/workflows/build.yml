@@ -1,0 +1,86 @@
+# Builds the theme, checks both skins with Rockbox's own parser (checkwps for the
+# iPod Video), refreshes the screenshots, and on main publishes Spotish-vX.Y.zip as a
+# GitHub Release when VERSION has no release yet.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate theme and screenshots
+        run: |
+          pip install pillow numpy
+          python src/gen_spotish.py
+
+      - name: Build checkwps (Rockbox skin parser) for the iPod Video
+        run: |
+          git clone --depth 1 https://github.com/Rockbox/rockbox.git "$RUNNER_TEMP/rockbox"
+          # checkwps doesn't use SDL, but configure insists on finding sdl2-config
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\ncase "$1" in --version) echo 2.0.20;; *) echo "";; esac\n' > "$RUNNER_TEMP/bin/sdl2-config"
+          chmod +x "$RUNNER_TEMP/bin/sdl2-config"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/cw" && cd "$RUNNER_TEMP/cw"
+          "$RUNNER_TEMP/rockbox/tools/configure" --target=ipodvideo --type=C --ram=32
+          make -j"$(nproc)"
+
+      - name: Check the skins
+        working-directory: build
+        run: |
+          for f in .rockbox/wps/Spotish.wps .rockbox/wps/Spotish.sbs; do
+            out="$("$RUNNER_TEMP/cw/checkwps.ipodvideo" "$f" 2>&1)"; echo "$out"
+            echo "$out" | grep -q "parsed OK" || { echo "::error::$f failed checkwps"; exit 1; }
+          done
+
+      - name: Commit refreshed screenshots
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898341+github-actions[bot]@users.noreply.github.com"
+          git add screenshots
+          if ! git diff --cached --quiet; then
+            git commit -m "Update screenshots"
+            git push
+          fi
+
+      - name: Package
+        run: |
+          v="$(cat VERSION)"
+          mkdir -p dist/pkg
+          cp -r build/.rockbox dist/pkg/
+          cp backdrops/make_backdrops.py dist/pkg/
+          cp backdrops/README.md dist/pkg/ALBUM-COLOURS.md
+          (cd dist/pkg && zip -qr "../Spotish-v$v.zip" .)
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spotish-v${{ env.VERSION }}
+          path: dist/pkg
+
+      - name: Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"; exit 0
+          fi
+          notes="release-notes/$tag.md"; [ -f "$notes" ] || notes=/dev/null
+          gh release create "$tag" "dist/Spotish-$tag.zip" --target "$(git rev-parse HEAD)" \
+            --title "Spotish $tag" --notes-file "$notes"
