@@ -136,3 +136,33 @@ def match_backdrop(img, backdrop, x, y, tolerance=4):
     mask = (np.abs(a - b).max(-1) <= tolerance)[..., None]
     lv = np.where(mask, levels(backdrop, True)[y:y + h, x:x + w], levels(img, False))
     return encode(lv)
+
+
+class Canvas:
+    """The iPod screen as RGB565 levels, for device-accurate mockups of skins that
+    draw 32-bit alpha images over a backdrop.
+
+    Rockbox converts the alpha to 4 bits, 0 = opaque ... 15 = transparent
+    (apps/recorder/bmp.c: ~alpha >> 4), then blends with the backdrop pixel per
+    565 channel (firmware/drivers/lcd-16bit-common.c, blend_two_colors):
+        a' = a + (a >> 3);  out = (backdrop * a' + image * (16 - a')) >> 4"""
+
+    def __init__(self, backdrop, dither=True):
+        self.lv = levels(backdrop, dither)
+
+    def blend(self, layer, x, y):
+        layer = layer.convert("RGBA")
+        img = levels(layer, False)
+        a = 15 - (np.asarray(layer, dtype=np.int32)[..., 3] >> 4)
+        a = (a + (a >> 3))[..., None]
+        h, w = img.shape[:2]
+        dst = self.lv[y:y + h, x:x + w]
+        self.lv[y:y + h, x:x + w] = (dst * a + img * (16 - a)) >> 4
+
+    def paste(self, img, x, y, dither=False):
+        lv = levels(img, dither)
+        h, w = lv.shape[:2]
+        self.lv[y:y + h, x:x + w] = lv
+
+    def image(self):
+        return display(self.lv)

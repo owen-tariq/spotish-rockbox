@@ -1,12 +1,16 @@
 """
 Spotish - a Spotify desktop-player style Rockbox theme for the iPod Video 5 / 5.5G (320x240).
 
-Now Playing ("concept A"): a rounded "Song" card on black - teal header with album
-art, a small "Song" label, big bold title and "artist - year - length", then the
-green play button with add / download / more icons and "Next in queue" - above
-the desktop player bar (shuffle, prev, white round play/pause, next, repeat, and
-the progress line with times on both sides). Changing the volume swaps the
-progress line for a volume line.
+Now Playing: Spotify's phone player on the iPod's wide screen. The whole screen is a
+dark glow in the album's own colours with the rounded cover on top - one 320x240
+picture per album, made by backdrops/make_backdrops.py and found by Rockbox as
+cover.320x240.bmp. Next to the cover: "PLAYING FROM ALBUM", the album, a big bold
+title, the artist and a star; under it the progress line with elapsed and remaining
+time, then shuffle, previous, play/pause, next and repeat in plain white. Changing
+the volume swaps the times for a speaker.
+
+The cover picture is drawn in a %VB viewport, i.e. INTO the backdrop buffer, so every
+text line and transparent (32-bit alpha) icon drawn later blends with the glow.
 
 Menus: the "Your Library" panel - a rounded dark card with a bold title and the
 list - above a black mini player (art, title, artist, play/pause, progress).
@@ -34,7 +38,9 @@ OUT = os.path.join(ROOT, "build" if NAME == "Spotish" else f"build-{NAME}", ".ro
 IMG_DIR = os.path.join(OUT, "wps", NAME)
 FNT_DIR = os.path.join(ROOT, "fonts")              # prebuilt Rockbox fonts (Inter, OFL)
 sys.path.insert(0, HERE)
-from rbdevice import match_backdrop, device_view, RbFont  # noqa: E402  (RGB565 emulation)
+from rbdevice import match_backdrop, device_view, RbFont, Canvas  # noqa: E402  (RGB565 emulation)
+sys.path.insert(0, os.path.join(ROOT, "backdrops"))
+import make_backdrops as MB  # noqa: E402  (cover geometry + the glow itself)
 
 # Inter (SIL Open Font License) for text baked into bitmaps and for the mockups
 FONT_DIR = os.path.join(HERE, "fonts")
@@ -50,8 +56,8 @@ def hx(s):
 
 GREEN, GREY, TRACK, CARD = hx("1ED760"), hx("B3B3B3"), hx("4D4D4D"), hx("121212")
 WHITE, BLACK = (255, 255, 255), (0, 0, 0)
-TEAL_TOP, TEAL_BOT = hx("26828E"), hx("14525C")       # song header
-TEAL_FADE = hx("133C42")                               # lower card starts here, fades to CARD
+SOFT = hx("D0D0D0")                                    # artist / times on the glow
+DIM = (255, 255, 255, 77)                              # progress track: white at 30 %
 SEL_BG, SEL_FG = GREEN, BLACK                          # list selection: Spotify green, black text
 
 # line heights of the bundled fonts, read from their .fnt headers ("RB12" format)
@@ -65,39 +71,45 @@ def _fnt_height(name):
 FH = {f: _fnt_height(f) for f in os.listdir(FNT_DIR) if f.endswith(".fnt")}
 
 # ================================================================ Now Playing layout
-CARD_X, CARD_Y, CARD_W, CARD_H = 4, 4, 312, 174      # the "Song" card
-HEAD_H = 92                                          # teal header part of the card
-ART_X, ART_Y, ART_S = 14, 14, 72
-INFO_X = ART_X + ART_S + 10                          # 96
-INFO_W = CARD_X + CARD_W - 10 - INFO_X               # 210
-SONG_LABEL_Y = 18
-TITLE_Y = 28                                         # 28-Spotish-InterDisplay-Bold, 29 px line
-META_Y = 62                                          # 13-Spotish-Inter-SemiBold, 14 px line
-LOCK_X, LOCK_Y, LOCK_S = CARD_X + CARD_W - 20, 10, 12
+# cover geometry lives in backdrops/make_backdrops.py, which bakes it into the picture
+ART_X, ART_Y, ART_S = MB.ART_X, MB.ART_Y, MB.ART_S
+INFO_X = ART_X + ART_S + 16                          # 164, text column right of the cover
+INFO_R = W - 16                                      # 304
+INFO_W = INFO_R - INFO_X                             # 140
+FROM_Y = ART_Y + 4                                   # "PLAYING FROM ALBUM" (baked label)
+FROM_H = 10
+LOCK_S = 12
+LOCK_X, LOCK_Y = INFO_R - LOCK_S, ART_Y + 2
+ALBUM_Y = FROM_Y + FROM_H + 3                        # album name, 13-Spotish-Inter-SemiBold
+TITLE_H = FH["20-Spotish-Inter-Bold.fnt"]            # 22
+ARTIST_H = FH["16-Spotish-Inter-SemiBold.fnt"]       # 17
+ARTIST_Y = ART_Y + ART_S - ARTIST_H                  # bottom lines up with the cover
+TITLE_Y = ARTIST_Y - 2 - TITLE_H
+STAR_S = 20
+STAR_X = INFO_R - STAR_S
+STAR_Y = TITLE_Y + (ARTIST_Y + ARTIST_H - TITLE_Y - STAR_S) // 2
+TEXT_W = STAR_X - 6 - INFO_X                         # title / artist width
 
-PLAY_X, PLAY_Y, PLAY_D = 14, 98, 34                  # green play button
-ACT_Y, ACT_S = 105, 20                               # add / download / more icons
-ACT_XS = (60, 88, 116)
-NEXT_HEAD_Y = 138                                    # "Next in queue", 15-Spotish-Inter-Bold
-NEXT_Y = 158                                         # next track, 13-Spotish-Inter-SemiBold
-
-BAR_Y = CARD_Y + CARD_H + 2                          # 180, black player bar
-CTRL_CY = BAR_Y + 16                                 # controls centre line
-SM = 16                                              # small control icon
-SM_Y = CTRL_CY - SM // 2
-TILE_H = SM + 6                                      # icon + gap + "active" dot
-SHUF_X, PREV_X, NEXT_X, REP_X = 76, 114, 190, 228
-PP_D = 26
-PP_X, PP_Y = (W - PP_D) // 2, CTRL_CY - PP_D // 2
-
-PROG_CY = BAR_Y + 41                                 # times + progress line centre
-PB_X, PB_W, PB_H = 50, 220, 10
+PB_X, PB_W, PB_H = 16, W - 32, 8                     # full-width progress line
+PROG_CY = ART_Y + ART_S + 18                         # 166
 PB_Y = PROG_CY - PB_H // 2
 LINE_H = 4
 TIME_H = FH["13-Spotish-Inter-SemiBold.fnt"]
-TIME_Y = PROG_CY - TIME_H // 2
-SPK_S = 14                                           # volume speaker (replaces elapsed time)
-SPK_X, SPK_Y = PB_X - 8 - SPK_S, PROG_CY - SPK_S // 2
+TIME_Y = PB_Y + PB_H + 2
+TIME_W = 100
+SPK_S = 14                                           # volume speaker (replaces the times)
+SPK_X, SPK_Y = PB_X, TIME_Y
+
+CTRL_CY = 212                                        # controls centre line
+PP_D = 32                                            # play / pause glyph
+PP_X, PP_Y = (W - PP_D) // 2, CTRL_CY - PP_D // 2
+SK_W, SK_H = 30, 22                                  # previous / next
+PREV_X, NEXT_X = 92 - SK_W // 2, 228 - SK_W // 2
+SK_Y = CTRL_CY - SK_H // 2
+SM = 18                                              # shuffle / repeat
+SM_Y = CTRL_CY - SM // 2
+TILE_H = SM + 6                                      # icon + gap + "active" dot
+SHUF_X, REP_X = PB_X, PB_X + PB_W - SM
 
 # ================================================================ menu (sbs) layout
 LIB_X, LIB_Y, LIB_W, LIB_H = 4, 4, 312, 182          # "Your Library" card
@@ -167,7 +179,7 @@ def put(img, x, y, layer):
 
 
 def stack(tiles):
-    out = Image.new("RGB", (tiles[0].width, sum(t.height for t in tiles)))
+    out = Image.new(tiles[0].mode, (tiles[0].width, sum(t.height for t in tiles)), (0, 0, 0, 0) if tiles[0].mode == "RGBA" else 0)
     y = 0
     for t in tiles:
         out.paste(t, (0, y))
@@ -244,19 +256,43 @@ def i_plus_circle(col):
     return p
 
 
-def i_down_circle(col):
+def i_skip(col, forward):
+    """Two rounded triangles, as in the reference phone player (prev / next)."""
     def p(d, w, h):
-        lw = max(2, round(w * .07))
-        d.ellipse([lw, lw, w - lw, h - lw], outline=col, width=lw)
-        d.line([(w * .5, h * .26), (w * .5, h * .68)], fill=col, width=lw)
-        d.line([(w * .32, h * .52), (w * .5, h * .7), (w * .68, h * .52)], fill=col, width=lw, joint="curve")
+        k = w / 30
+        for x0 in (1, 15):
+            pts = [(x0 * k, h * .1), (x0 * k, h * .9), ((x0 + 14) * k, h * .5)]
+            if not forward:
+                pts = [(w - x, y) for x, y in pts]
+            d.polygon(pts, fill=col)
+            d.line(pts + [pts[0]], fill=col, width=max(1, round(k * 2.2)), joint="curve")
     return p
 
 
-def i_dots(col):
+def i_play_big(col):
     def p(d, w, h):
-        for cx in (.22, .5, .78):
-            d.ellipse([w * cx - w * .07, h * .43, w * cx + w * .07, h * .57], fill=col)
+        pts = [(w * .24, h * .12), (w * .24, h * .88), (w * .86, h * .5)]
+        d.polygon(pts, fill=col)
+        d.line(pts + [pts[0]], fill=col, width=round(w * .06), joint="curve")
+    return p
+
+
+def i_pause_big(col):
+    def p(d, w, h):
+        d.rounded_rectangle([w * .2, h * .1, w * .4, h * .9], radius=w * .06, fill=col)
+        d.rounded_rectangle([w * .6, h * .1, w * .8, h * .9], radius=w * .06, fill=col)
+    return p
+
+
+def i_star(col, filled):
+    def p(d, w, h):
+        import math
+        cx, cy, ro, ri = w / 2, h * .53, w * .47, w * .2
+        pts = [(cx + (ro if i % 2 == 0 else ri) * math.sin(i * math.pi / 5),
+                cy - (ro if i % 2 == 0 else ri) * math.cos(i * math.pi / 5)) for i in range(10)]
+        if filled:
+            d.polygon(pts, fill=col)
+        d.line(pts + [pts[0]], fill=col, width=max(2, round(w * .075)), joint="curve")
     return p
 
 
@@ -328,22 +364,12 @@ def no_art(s):
 
 
 # ---------------------------------------------------------------- backdrops
-def wps_backdrop():
-    img = Image.new("RGB", (W, H), BLACK)
-    card = Image.new("RGB", (CARD_W, CARD_H))
-    vgrad(card, (0, 0, CARD_W, HEAD_H), TEAL_TOP, TEAL_BOT)
-    vgrad(card, (0, HEAD_H, CARD_W, CARD_H), TEAL_FADE, CARD)
-    rounded_card(img, CARD_X, CARD_Y, CARD_W, CARD_H, card)
-    # album art shadow
-    sh = ss(ART_S + 10, ART_S + 10, lambda d, w, h: d.rectangle([8, 14, w - 2, h - 2], fill=(0, 0, 0, 110)))
-    put(img, ART_X - 2, ART_Y, sh.filter(ImageFilter.GaussianBlur(2.5)))
-    d = ImageDraw.Draw(img)
-    d.text((INFO_X, SONG_LABEL_Y), "Song", font=font(SEMI_FONT, 11), fill=WHITE)
-    for x, p in zip(ACT_XS, (i_plus_circle, i_down_circle, i_dots)):
-        put(img, x, ACT_Y, icon(ACT_S, p(rgba(GREY))))
-    put(img, PREV_X, SM_Y, icon(SM, i_prev(rgba(GREY))))
-    put(img, NEXT_X, SM_Y, icon(SM, i_next(rgba(GREY))))
-    return img
+def wps_noart():
+    """Shown (full screen) when a song has no art at all: the same layout with a grey
+    placeholder cover, so it looks like a quiet, colourless album."""
+    big = Image.new("RGBA", (300, 300), rgba(hx("333333")))
+    big.alpha_composite(ss(300, 300, i_note(rgba(hx("8A8A8A")))))
+    return MB.compose(big.convert("RGB"))
 
 
 def sbs_backdrop():
@@ -368,40 +394,86 @@ def battery_icon(full):
 
 
 # ---------------------------------------------------------------- build images
+LAYERS = {}  # every saved image, for the mockups (PIL can't read 32-bit BMP alpha back)
+
+
 def save(img, name):
+    """24-bit BMP, or 32-bit BMP with alpha for RGBA layers (Rockbox reads the alpha
+    channel of 32-bit skin images: apps/recorder/bmp.c, FORMAT_TRANSPARENT)."""
     os.makedirs(IMG_DIR, exist_ok=True)
-    img.convert("RGB").save(os.path.join(IMG_DIR, name), "BMP")
+    path = os.path.join(IMG_DIR, name)
+    LAYERS[name] = img.copy()
+    if img.mode == "RGBA":
+        write_bmp32(img, path)
+    else:
+        img.convert("RGB").save(path, "BMP")
+
+
+def write_bmp32(img, path):
+    """Plain BI_RGB 32-bit BGRA bottom-up BMP (what Rockbox's bmp.c expects)."""
+    w, h = img.size
+    rows = []
+    px = img.tobytes("raw", "BGRA")
+    for y in range(h - 1, -1, -1):
+        rows.append(px[y * w * 4:(y + 1) * w * 4])
+    data = b"".join(rows)
+    head = struct.pack("<2sIHHI", b"BM", 54 + len(data), 0, 0, 54)
+    info = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 32, 0, len(data), 2835, 2835, 0, 0)
+    with open(path, "wb") as fh:
+        fh.write(head + info + data)
+
+
+def label(text, w, h, col):
+    """Small letter-spaced caps label (Spotify's "PLAYING FROM ALBUM"), baked as alpha."""
+    k = 4
+    big = Image.new("RGBA", (w * k, h * k), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    f = font(SEMI_FONT, 8.5 * k)
+    x = 0
+    for ch in text:
+        d.text((x, h * k / 2), ch, font=f, fill=col, anchor="lm")
+        x += d.textlength(ch, font=f) + 0.9 * k
+    return big.resize((w, h), Image.LANCZOS)
 
 
 def build_images():
-    wps, sbs = wps_backdrop(), sbs_backdrop()
-    save(wps, "wps_backdrop.bmp")
+    noart, sbs = wps_noart(), sbs_backdrop()
+    save(noart, "wps_noart.bmp")
     save(sbs, "sbs_backdrop.bmp")
 
-    # Everything cut out of a backdrop goes through match_backdrop(): Rockbox
+    # Menus: everything cut out of the backdrop goes through match_backdrop(): Rockbox
     # dithers the backdrop but not these, so without it they'd show as tinted patches.
-    mw = lambda layer, x, y: match_backdrop(over(wps, x, y, layer), wps, x, y)
     ms = lambda layer, x, y: match_backdrop(over(sbs, x, y, layer), sbs, x, y)
 
-    # green play button in the card: stop -> play, play -> pause, pause -> play
-    save(stack([mw(circle_button(PLAY_D, GREEN, g, BLACK), PLAY_X, PLAY_Y) for g in (i_play, i_pause)]), "play_big.bmp")
-    # white play/pause in the player bar
-    save(stack([mw(circle_button(PP_D, WHITE, g, BLACK), PP_X, PP_Y) for g in (i_play, i_pause)]), "pp.bmp")
+    # Now Playing: the background changes with every album, so these are 32-bit BMPs
+    # with real transparency (Rockbox blends them with the backdrop, lcd_bmp_part ->
+    # lcd_alpha_bitmap_part_mix). Widths are even, as lcd_bmp() expects for alpha.
+    save(stack([icon(PP_D, g(rgba(WHITE))) for g in (i_play_big, i_pause_big)]), "pp.bmp")
+    save(ss(SK_W, SK_H, i_skip(rgba(WHITE), False)), "prev.bmp")
+    save(ss(SK_W, SK_H, i_skip(rgba(WHITE), True)), "next.bmp")
     # shuffle: off, on ; repeat: off, all, one, A-B
-    save(stack([mw(mode_tile(i_shuffle(rgba(GREY)), False), SHUF_X, SM_Y),
-                mw(mode_tile(i_shuffle(rgba(GREEN)), True), SHUF_X, SM_Y)]), "shuffle.bmp")
-    save(stack([mw(mode_tile(i_repeat(rgba(GREY)), False), REP_X, SM_Y),
-                mw(mode_tile(i_repeat(rgba(GREEN)), True), REP_X, SM_Y),
-                mw(mode_tile(i_repeat(rgba(GREEN), "1"), True), REP_X, SM_Y),
-                mw(mode_tile(i_repeat(rgba(GREEN), "AB"), True), REP_X, SM_Y)]), "repeat.bmp")
-    save(mw(icon(LOCK_S, i_lock(rgba(hx("D8E6E8")))), LOCK_X, LOCK_Y), "lock.bmp")
+    save(stack([mode_tile(i_shuffle(rgba(WHITE)), False),
+                mode_tile(i_shuffle(rgba(GREEN)), True)]), "shuffle.bmp")
+    save(stack([mode_tile(i_repeat(rgba(WHITE)), False),
+                mode_tile(i_repeat(rgba(GREEN)), True),
+                mode_tile(i_repeat(rgba(GREEN), "1"), True),
+                mode_tile(i_repeat(rgba(GREEN), "AB"), True)]), "repeat.bmp")
+    save(stack([icon(STAR_S, i_star(rgba(SOFT), False)), icon(STAR_S, i_star(rgba(GREEN), True))]), "star.bmp")
+    save(icon(LOCK_S, i_lock(rgba(SOFT))), "lock.bmp")
+    save(stack([label("PLAYING FROM ALBUM", INFO_W - LOCK_S - 4, FROM_H, (255, 255, 255, 190)),
+                label("PLAYING FROM FOLDER", INFO_W - LOCK_S - 4, FROM_H, (255, 255, 255, 190))]), "from.bmp")
 
-    # progress line (white on grey) and the volume line that replaces it
-    save(match_backdrop(line_track(wps, PB_X, PB_Y, PB_W, PB_H, WHITE, LINE_H), wps, PB_X, PB_Y), "pb_fill.bmp")
-    save(match_backdrop(line_track(wps, PB_X, PB_Y, PB_W, PB_H, TRACK, LINE_H), wps, PB_X, PB_Y), "pb_back.bmp")
-    save(mw(icon(SPK_S, i_speaker(rgba(WHITE))), SPK_X, SPK_Y), "speaker.bmp")
+    # progress line: white fill on a 30 % white track; the volume line reuses it
+    def line(col):
+        def p(d, ww, hh):
+            t = LINE_H * 4
+            top = (hh - t) / 2
+            d.rounded_rectangle([0, top, ww - 1, top + t - 1], radius=t / 2, fill=col)
+        return ss(PB_W, PB_H, p)
+    save(line(rgba(WHITE)), "pb_fill.bmp")
+    save(line(DIM), "pb_back.bmp")
+    save(icon(SPK_S, i_speaker(rgba(SOFT))), "speaker.bmp")
 
-    save(no_art(ART_S), "noart.bmp")
     save(no_art(MART), "noart_small.bmp")
 
     if STATUS_STYLE == "C":
@@ -412,11 +484,11 @@ def build_images():
     save(stack([ms(circle_button(MPP_D, WHITE, g, BLACK), MPP_X, MPP_Y) for g in (i_play, i_pause)]), "mini_pp.bmp")
     save(match_backdrop(line_track(sbs, MPB_X, MPB_Y, MPB_W, MPB_H, WHITE, MPB_H), sbs, MPB_X, MPB_Y), "mini_pb_fill.bmp")
     save(match_backdrop(line_track(sbs, MPB_X, MPB_Y, MPB_W, MPB_H, TRACK, MPB_H), sbs, MPB_X, MPB_Y), "mini_pb_back.bmp")
-    return wps, sbs
+    return noart, sbs
 
 
 # ---------------------------------------------------------------- skins
-WPS_FONTS = {2: "28-Spotish-InterDisplay-Bold.fnt", 3: "13-Spotish-Inter-SemiBold.fnt", 4: "15-Spotish-Inter-Bold.fnt"}
+WPS_FONTS = {2: "20-Spotish-Inter-Bold.fnt", 3: "13-Spotish-Inter-SemiBold.fnt", 4: "16-Spotish-Inter-SemiBold.fnt"}
 SBS_FONTS = {2: "20-Spotish-Inter-Bold.fnt", 3: "13-Spotish-Inter-SemiBold.fnt", 4: "16-Spotish-Inter-SemiBold.fnt"}
 LIST_FONT = "19-Spotish-Inter-Medium.fnt"
 VOL_POPUP_SECS = 1.2  # how long the volume line stays after the last change (musicOS_v2 uses 1.2)
@@ -435,101 +507,108 @@ def fonts_block(fonts):
 def write_wps():
     s = f"""# ==================================================
 # {NAME} - Now Playing
-# Spotify desktop-player style, iPod Video 320x240
+# Spotify phone-player style, iPod Video 320x240
 # generated by gen_spotish.py - edit the generator, not this file
 # ==================================================
 
 %wd
 
-# ---- preloads
+# ---- preloads (32-bit BMPs with alpha: they blend with the album's glow)
 %xl(PbFill,pb_fill.bmp,0,0)
 %xl(PbBack,pb_back.bmp,0,0)
-%xl(PlayBig,play_big.bmp,0,0,2)
 %xl(PP,pp.bmp,0,0,2)
+%xl(Prev,prev.bmp,0,0)
+%xl(Next,next.bmp,0,0)
 %xl(Shuf,shuffle.bmp,0,0,2)
 %xl(Rep,repeat.bmp,0,0,4)
+%xl(Star,star.bmp,0,0,2)
+%xl(From,from.bmp,0,0,2)
 %xl(Spk,speaker.bmp,0,0)
 %xl(Lock,lock.bmp,0,0)
-%xl(NoArt,noart.bmp,0,0)
+%xl(NoArt,wps_noart.bmp,0,0)
 
 {fonts_block(WPS_FONTS)}
 
 # ---- logic: lives in the implicit default viewport, which is evaluated but
 # never drawn or cleared (same as musicOS_v2). Putting it in a full-screen %V
 # makes every refresh of these lines wipe screen bands -> flicker.
-# Times + progress line, or the volume line while the volume changes.
+# Times, or the speaker while the volume changes.
 %?mv({VOL_POPUP_SECS})<%Vd(vol)|%Vd(prog)>
 
-# ---- backdrop: %X gives this skin its own backdrop buffer. (Every %VB
-# backdrop shares ONE buffer named #backdrop_buffer#, so the menu and Now
-# Playing skins overwrote each other and text boxes showed solid colour.)
-%X(wps_backdrop.bmp)
-
-# ---- song card: art, title, artist / year / length
-%V({ART_X},{ART_Y},{ART_S},{ART_S},-)
-%Cl(0,0,{ART_S},{ART_S},c,c)
+# ---- the album's glow + cover: one full-screen picture per album, made by
+# backdrops/make_backdrops.py and found by Rockbox as cover.{W}x{H}.bmp (it looks
+# for a cover of the exact %Cl size first - apps/recorder/albumart.c).
+# %VB draws this viewport INTO the backdrop buffer, so every line of text below,
+# which clears itself to the backdrop before drawing, keeps the glow behind it.
+%V(0,0,{W},{H},-)
+%VB
+%Cl(0,0,{W},{H},c,c)
 %?C<%Cd|%xd(NoArt)>
 
-%V({INFO_X},{TITLE_Y},{INFO_W},{FH['28-Spotish-InterDisplay-Bold.fnt']},2)
-%Vf(FFFFFF)
-%Vb(1F6D78)
-%s%?it<%it|%fn>
+# ---- reveal: a full-screen viewport with nothing in it. On a full redraw (new
+# song, art loaded) it clears itself, which copies the fresh glow to the screen
+# everywhere the viewports below don't cover.
+%V(0,0,{W},{H},-)
 
-%V({INFO_X},{META_Y},{INFO_W},{FH['13-Spotish-Inter-SemiBold.fnt']},3)
-%Vf(E1EBEC)
-%Vb(1A5F69)
-%s%?ia<%ia|Unknown artist>%?iy< \u2022 %iy|> \u2022 %pt
+# ---- "PLAYING FROM ALBUM" + album (or folder), hold lock
+%V({INFO_X},{FROM_Y},{INFO_W - LOCK_S - 4},{FROM_H},-)
+%?id<%xd(From,1)|%xd(From,2)>
 
 %V({LOCK_X},{LOCK_Y},{LOCK_S},{LOCK_S},-)
 %?mh<%xd(Lock)|>
 
-# ---- green play button (shows the action: play when stopped/paused)
-# (%?mp order is stop|play|pause|ffwd|rew)
-%V({PLAY_X},{PLAY_Y},{PLAY_D},{PLAY_D},-)
-%?mp<%xd(PlayBig,1)|%xd(PlayBig,2)|%xd(PlayBig,1)|%xd(PlayBig,2)|%xd(PlayBig,2)>
-
-# ---- next in queue
-%V(14,{NEXT_HEAD_Y},{CARD_W - 20},{FH['15-Spotish-Inter-Bold.fnt']},4)
+%V({INFO_X},{ALBUM_Y},{INFO_W},{FH['13-Spotish-Inter-SemiBold.fnt']},3)
 %Vf(FFFFFF)
-%Vb(141E20)
-%?It<Next in queue|>
+%s%?id<%id|%d(1)>
 
-%V(14,{NEXT_Y},{CARD_W - 20},{FH['13-Spotish-Inter-SemiBold.fnt']},3)
-%Vf(B3B3B3)
-%Vb(131719)
-%s%?It<%It%?Ia< - %Ia|>|>
+# ---- title, artist, star (green when the song is rated)
+%V({INFO_X},{TITLE_Y},{TEXT_W},{TITLE_H},2)
+%Vf(FFFFFF)
+%s%?it<%it|%fn>
 
-# ---- player bar: shuffle, (prev), play/pause, (next), repeat
-# (%?mm order is off|all|one|shuffle|ab)
+%V({INFO_X},{ARTIST_Y},{TEXT_W},{ARTIST_H},4)
+%Vf({'%02X%02X%02X' % SOFT})
+%s%?ia<%ia|%?iA<%iA|Unknown artist>>
+
+%V({STAR_X},{STAR_Y},{STAR_S},{STAR_S},-)
+%?rr<%xd(Star,1)|%xd(Star,2)>
+
+# ---- progress line, full width
+%V({PB_X},{PB_Y},{PB_W},{PB_H},-)
+{bar('pb', 0, 0, PB_W, PB_H, 'PbFill', 'PbBack')}
+
+# ---- elapsed | -remaining  (or the speaker + volume while it changes)
+%Vl(prog,{PB_X},{TIME_Y},{TIME_W},{TIME_H},3)
+%Vf({'%02X%02X%02X' % SOFT})
+%pc
+
+%Vl(prog,{PB_X + PB_W - TIME_W},{TIME_Y},{TIME_W},{TIME_H},3)
+%Vf({'%02X%02X%02X' % SOFT})
+%ar-%pr
+
+%Vl(vol,{SPK_X},{SPK_Y},{SPK_S},{SPK_S},-)
+%xd(Spk)
+
+%Vl(vol,{SPK_X + SPK_S + 6},{TIME_Y},{TIME_W},{TIME_H},3)
+%Vf({'%02X%02X%02X' % SOFT})
+%pv
+
+# ---- controls: shuffle, previous, play/pause, next, repeat
+# (%?mm order is off|all|one|shuffle|ab ; %?mp order is stop|play|pause|ffwd|rew)
 %V({SHUF_X},{SM_Y},{SM},{TILE_H},-)
 %?ps<%xd(Shuf,2)|%xd(Shuf,1)>
+
+%V({PREV_X},{SK_Y},{SK_W},{SK_H},-)
+%xd(Prev)
 
 %V({PP_X},{PP_Y},{PP_D},{PP_D},-)
 %?mp<%xd(PP,1)|%xd(PP,2)|%xd(PP,1)|%xd(PP,2)|%xd(PP,2)>
 
+%V({NEXT_X},{SK_Y},{SK_W},{SK_H},-)
+%xd(Next)
+
 %V({REP_X},{SM_Y},{SM},{TILE_H},-)
 %?mm<%xd(Rep,1)|%xd(Rep,2)|%xd(Rep,3)|%xd(Rep,2)|%xd(Rep,4)>
-
-# ---- progress row: elapsed | line | length
-%Vl(prog,4,{TIME_Y},{PB_X - 10},{TIME_H},3)
-%Vf(B3B3B3)
-%Vb(000000)
-%ar%pc
-
-%Vl(prog,{PB_X},{PB_Y},{PB_W},{PB_H},-)
-{bar('pb', 0, 0, PB_W, PB_H, 'PbFill', 'PbBack')}
-
-%Vl(prog,{PB_X + PB_W + 6},{TIME_Y},{W - PB_X - PB_W - 10},{TIME_H},3)
-%Vf(B3B3B3)
-%Vb(000000)
-%al%pt
-
-# ---- volume row: speaker | line
-%Vl(vol,{SPK_X},{SPK_Y},{SPK_S},{SPK_S},-)
-%xd(Spk)
-
-%Vl(vol,{PB_X},{PB_Y},{PB_W},{PB_H},-)
-{bar('pv', 0, 0, PB_W, PB_H, 'PbFill', 'PbBack')}
 """
     with open(os.path.join(OUT, "wps", f"{NAME}.wps"), "w", newline="\n", encoding="utf-8") as fh:
         fh.write(s)
@@ -613,7 +692,7 @@ def write_sbs():
 
 
 def write_cfg():
-    s = f"""# {NAME} - Spotify desktop-player style theme
+    s = f"""# {NAME} - Spotify-style theme
 # Rockbox, iPod Video 5 / 5.5G (320x240)
 
 wps: /.rockbox/wps/{NAME}.wps
@@ -634,6 +713,11 @@ scrollbar: right
 scrollbar width: 3
 
 statusbar: top
+
+# Now Playing shows the album's own glow picture (cover.320x240.bmp, made by
+# backdrops/make_backdrops.py). Rockbox only looks at cover files before embedded
+# art when this is "prefer image file" (apps/playback.c, audio_load_albumart).
+album art: prefer image file
 
 # smooth scrolling of long titles: move 1 pixel per step, ~49 steps/s
 # (speed 16 in firmware/scroll_engine.c; the default is 6 px at 10 steps/s)
@@ -658,13 +742,34 @@ def sample_cover(s):
     return img
 
 
+def sample_cover2(s):
+    """Second placeholder cover: warm sunset."""
+    img = Image.new("RGB", (s, s))
+    vgrad(img, (0, 0, s, s), (250, 170, 60), (120, 20, 60))
+    g = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(g)
+    d.ellipse([s * .3, s * .45, s * .7, s * .85], fill=(255, 230, 150, 230))
+    d.rectangle([0, s * .7, s, s], fill=(60, 10, 40, 255))
+    img.paste(g.filter(ImageFilter.GaussianBlur(s / 60)), (0, 0), g.filter(ImageFilter.GaussianBlur(s / 60)))
+    return img
+
+
+def sample_cover3(s):
+    """Third placeholder cover: cool green-teal waves."""
+    img = Image.new("RGB", (s, s), (10, 40, 45))
+    d = ImageDraw.Draw(img)
+    for i in range(7):
+        y = s * (.25 + i * .1)
+        d.arc([-s * .3, y - s * .2, s * 1.3, y + s * .2], 200, 340, fill=(40 + i * 25, 190 - i * 10, 160), width=max(2, s // 40))
+    return img.filter(ImageFilter.GaussianBlur(s / 200))
+
+
 def preview(wps_bg, sbs_bg):
     """Screenshots as the iPod draws them: RGB565 + backdrop dither, and text rendered
     with the bundled Rockbox .fnt fonts at the exact viewport positions of the skin."""
     pv = os.path.join(ROOT, "screenshots")
     os.makedirs(pv, exist_ok=True)
     F = {f: RbFont(os.path.join(FNT_DIR, f)) for f in FH}
-    TITLE, META, HEAD = F[WPS_FONTS[2]], F[WPS_FONTS[3]], F[WPS_FONTS[4]]
     LTITLE, SMALL, MTITLE, LIST = F[SBS_FONTS[2]], F[SBS_FONTS[3]], F[SBS_FONTS[4]], F[LIST_FONT]
 
     def load(name, frame=None, frames=1):
@@ -682,26 +787,49 @@ def preview(wps_bg, sbs_bg):
     def save(img, name):
         img.resize((W * 2, H * 2), Image.NEAREST).save(os.path.join(pv, name))
 
-    img = device_view(wps_bg, dither=True)
-    img.paste(device_view(sample_cover(ART_S)), (ART_X, ART_Y))
-    TITLE.draw(img, INFO_X, TITLE_Y, "Ramayana (The Introduction Theme)", WHITE, INFO_W)
-    META.draw(img, INFO_X, META_Y, "Hans Zimmer • 2026 • 2:35", hx("E1EBEC"), INFO_W)
-    img.paste(load("play_big.bmp", 1, 2), (PLAY_X, PLAY_Y))
-    HEAD.draw(img, 14, NEXT_HEAD_Y, "Next in queue", WHITE, CARD_W - 20)
-    META.draw(img, 14, NEXT_Y, "Siya Ram - A.R. Rahman", GREY, CARD_W - 20)
-    img.paste(load("shuffle.bmp", 0, 2), (SHUF_X, SM_Y))
-    img.paste(load("pp.bmp", 1, 2), (PP_X, PP_Y))
-    img.paste(load("repeat.bmp", 1, 4), (REP_X, SM_Y))
-    META.draw(img, 4, TIME_Y, "1:36", GREY, PB_X - 10, "right")
-    barshot(img, "pb_fill.bmp", "pb_back.bmp", PB_X, PB_Y, .62)
-    META.draw(img, PB_X + PB_W + 6, TIME_Y, "2:35", GREY, W - PB_X - PB_W - 10)
-    save(img, "now-playing.png")
+    def frame(name, i, n):
+        im = LAYERS[name]
+        hh = im.height // n
+        return im.crop((0, i * hh, im.width, (i + 1) * hh))
 
-    vimg = img.copy()
-    vimg.paste(device_view(wps_bg, dither=True).crop((0, TIME_Y, W, TIME_Y + TIME_H)), (0, TIME_Y))
-    vimg.paste(load("speaker.bmp"), (SPK_X, SPK_Y))
-    barshot(vimg, "pb_fill.bmp", "pb_back.bmp", PB_X, PB_Y, .7)
-    save(vimg, "now-playing-volume.png")
+    def now_playing(cover, title, artist, album, frac, volume=False, shuffle=False, rated=False, repeat=0):
+        """One Now Playing screen, drawn the way the skin draws it."""
+        c = Canvas(MB.compose(cover))          # album art is loaded dithered (FORMAT_DITHER)
+        c.blend(frame("from.bmp", 0, 2), INFO_X, FROM_Y)
+        c.blend(frame("star.bmp", 1 if rated else 0, 2), STAR_X, STAR_Y)
+        c.blend(LAYERS["pb_back.bmp"], PB_X, PB_Y)
+        fill = LAYERS["pb_fill.bmp"]
+        c.blend(fill.crop((0, 0, int(fill.width * frac), fill.height)), PB_X, PB_Y)
+        c.blend(frame("shuffle.bmp", 1 if shuffle else 0, 2), SHUF_X, SM_Y)
+        c.blend(LAYERS["prev.bmp"], PREV_X, SK_Y)
+        c.blend(frame("pp.bmp", 1, 2), PP_X, PP_Y)
+        c.blend(LAYERS["next.bmp"], NEXT_X, SK_Y)
+        c.blend(frame("repeat.bmp", repeat, 4), REP_X, SM_Y)
+        if volume:
+            c.blend(LAYERS["speaker.bmp"], SPK_X, SPK_Y)
+        img = c.image()
+        ALB.draw(img, INFO_X, ALBUM_Y, album, WHITE, INFO_W)
+        TITLE.draw(img, INFO_X, TITLE_Y, title, WHITE, TEXT_W)
+        ART.draw(img, INFO_X, ARTIST_Y, artist, SOFT, TEXT_W)
+        if volume:
+            ALB.draw(img, SPK_X + SPK_S + 6, TIME_Y, "-12 dB", SOFT, TIME_W)
+        else:
+            ALB.draw(img, PB_X, TIME_Y, "1:36", SOFT, TIME_W)
+            ALB.draw(img, PB_X + PB_W - TIME_W, TIME_Y, "-0:59", SOFT, TIME_W, "right")
+        return img
+
+    TITLE, ALB, ART = F[WPS_FONTS[2]], F[WPS_FONTS[3]], F[WPS_FONTS[4]]
+    if os.environ.get("SPOTISH_TEST_COVER"):      # local check with a real cover, not saved to the repo
+        t = now_playing(Image.open(os.environ["SPOTISH_TEST_COVER"]), "Attention", "Charlie Puth", "Voicenotes", .1)
+        t.resize((W * 2, H * 2), Image.NEAREST).save(os.environ.get("SPOTISH_TEST_OUT", "test.png"))
+    covers = [sample_cover(600), sample_cover2(600), sample_cover3(600)]
+    save(now_playing(covers[0], "Ramayana (The Introduction Theme)", "Hans Zimmer", "Ramayana", .62), "now-playing.png")
+    save(now_playing(covers[0], "Ramayana (The Introduction Theme)", "Hans Zimmer", "Ramayana", .62, volume=True),
+         "now-playing-volume.png")
+    shots = [now_playing(covers[1], "Golden Hour", "Kavi", "Lanterns", .3, shuffle=True, rated=True),
+             now_playing(covers[2], "Low Tide", "Mira Sol", "Saltwater", .8, repeat=1)]
+    for i, s in enumerate(shots, 2):
+        save(s, f"now-playing-{i}.png")
 
     img = device_view(sbs_bg, dither=True)
     d = ImageDraw.Draw(img)
